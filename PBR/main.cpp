@@ -6,6 +6,9 @@
 #include <vector>
 #include <string>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #define internal static
 #define global_variable static 
 #define local_persist static
@@ -13,6 +16,7 @@
 #define ArrayCount(Array) (sizeof(Array) / sizeof(Array[0]))
 
 #include "math.hpp"
+#include "main.h"
 
 global_variable LARGE_INTEGER GlobalPerfCounterFrequency;
 
@@ -27,6 +31,7 @@ ReadEntireFile(char *Filename)
 	read_entire_file_result Result;
 
 	FILE *File = fopen(Filename, "rb");
+
 	fseek(File, 0, SEEK_END);
 	Result.Size = ftell(File);
 	fseek(File, 0, SEEK_SET);
@@ -206,7 +211,7 @@ ProcessInput(engine_input *Input, camera *Camera, real32 dt)
 	real32 CameraTargetDirZ = -cosf(DEG2RAD(Camera->Head))*cosf(DEG2RAD(Camera->Pitch));
 	Camera->TargetDir = Normalize(vec3(CameraTargetDirX, CameraTargetDirY, CameraTargetDirZ));
 
-	vec3 CameraFront = Normalize(Camera->TargetDir);
+	vec3 CameraFront = Camera->TargetDir;
 	vec3 CameraRight = Normalize(Cross(Camera->TargetDir, vec3(0.0f, 1.0f, 0.0f)));
 
 	real32 Speed = 5.0f;
@@ -344,7 +349,7 @@ int main(void)
 	real32 GameUpdateHz = (real32)MonitorRefreshRate;
 	real32 TargetSecondsPerFrame = 1.0f / GameUpdateHz;
 
-	uint32_t Width = 970, Height = 580;
+	uint32_t Width = 960, Height = 540;
 	GLFWwindow *Window = glfwCreateWindow(Width, Height, "PBR", 0, 0);
 	glfwMakeContextCurrent(Window);
 	engine_input Input = {};
@@ -358,22 +363,202 @@ int main(void)
 
 	glEnable(GL_DEPTH_TEST);
 	glEnable(GL_MULTISAMPLE);
-
+	
 	glewInit();
 
-	shader Shader;
-	CompileShader(&Shader, "shaders/DefaultVS.glsl", "shaders/DefaultFS.glsl");
+	real32 CubeVertices[] = {
+		// Back face
+		-1.0f, -1.0f, -1.0f,  
+		1.0f,  1.0f, -1.0f,  
+		1.0f, -1.0f, -1.0f,  
+		1.0f,  1.0f, -1.0f,  
+		-1.0f, -1.0f, -1.0f, 
+		-1.0f,  1.0f, -1.0f, 
+		// Front face
+		-1.0f, -1.0f,  1.0f,  
+		1.0f, -1.0f,  1.0f,  
+		1.0f,  1.0f,  1.0f,  
+		1.0f,  1.0f,  1.0f,  
+		-1.0f,  1.0f,  1.0f, 
+		-1.0f, -1.0f,  1.0f, 
+		// Left face
+		-1.0f,  1.0f,  1.0f, 
+		-1.0f,  1.0f, -1.0f, 
+		-1.0f, -1.0f, -1.0f, 
+		-1.0f, -1.0f, -1.0f, 
+		-1.0f, -1.0f,  1.0f, 
+		-1.0f,  1.0f,  1.0f, 
+		// Right face
+		1.0f,  1.0f,  1.0f,  
+		1.0f, -1.0f, -1.0f,  
+		1.0f,  1.0f, -1.0f,  
+		1.0f, -1.0f, -1.0f,  
+		1.0f,  1.0f,  1.0f,  
+		1.0f, -1.0f,  1.0f,  
+		// Bottom face
+		-1.0f, -1.0f, -1.0f, 
+		1.0f, -1.0f, -1.0f,  
+		1.0f, -1.0f,  1.0f,  
+		1.0f, -1.0f,  1.0f,  
+		-1.0f, -1.0f,  1.0f, 
+		-1.0f, -1.0f, -1.0f, 
+		// Top face
+		-1.0f,  1.0f, -1.0f, 
+		1.0f,  1.0f , 1.0f,  
+		1.0f,  1.0f, -1.0f,  
+		1.0f,  1.0f,  1.0f,  
+		-1.0f,  1.0f, -1.0f, 
+		-1.0f,  1.0f,  1.0f, 
+	};
+	GLuint CubeVAO, CubeVBO;
+	glGenVertexArrays(1, &CubeVAO);
+	glGenBuffers(1, &CubeVBO);
+	glBindVertexArray(CubeVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, CubeVBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(CubeVertices), CubeVertices, GL_STATIC_DRAW);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(real32), (void *)0);
+	glBindVertexArray(0);
 
-	UseShader(Shader);
+	shader PBRShader, EquirectangularToCubemapShader, ConvolutionIrradianceShader, SkyboxShader;
+	CompileShader(&PBRShader, "shaders/PBRVS.glsl", "shaders/PBRFS.glsl");
+	CompileShader(&EquirectangularToCubemapShader, "shaders/EquirectangularToCubemapVS.glsl",
+												   "shaders/EquirectangularToCubemapFS.glsl");
+	CompileShader(&ConvolutionIrradianceShader, "shaders/EquirectangularToCubemapVS.glsl",
+												"shaders/ConvoluteIrradianceFS.glsl");
+	CompileShader(&SkyboxShader, "shaders/SkyboxVS.glsl", "shaders/SkyboxFS.glsl");
+
+	stbi_set_flip_vertically_on_load(true);
+	int32_t EnvWidth, EnvHeight, Components;
+	real32 *Data = stbi_loadf("Data/Newport_Loft_Ref.hdr", &EnvWidth, &EnvHeight, &Components, 0);
+	GLuint HDRTexture;
+	if (Data)
+	{
+		glGenTextures(1, &HDRTexture);
+		glBindTexture(GL_TEXTURE_2D, HDRTexture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, EnvWidth, EnvHeight, 0, GL_RGB, GL_FLOAT, Data);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+		stbi_image_free(Data);
+	}
+	else
+	{
+		std::cout << "Can't load HDR image." << std::endl;
+	}
+
+
+	// NOTE(georgy): Equirectangular to cube map
+	GLuint CaptureFBO, CaptureRBO;
+	glGenFramebuffers(1, &CaptureFBO);
+	glGenRenderbuffers(1, &CaptureRBO);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, CaptureFBO);
+	glBindRenderbuffer(GL_RENDERBUFFER, CaptureRBO);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 512, 512);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, CaptureRBO);
+
+	GLuint EnvCubemap;
+	glGenTextures(1, &EnvCubemap);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, EnvCubemap);
+	for (uint32_t I = 0; I < 6; I++)
+	{
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + I, 0, GL_RGB16F, 512, 512, 0, GL_RGB, GL_FLOAT, 0);
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	
+	mat4 CaptureProjection = Perspective(90.0f, 1.0f, 0.1f, 10.0f);
+	mat4 CaptureViews[] = 
+	{
+		LookAt(vec3(0.0f, 0.0f, 0.0f), vec3(1.0f,  0.0f,  0.0f), vec3(0.0f, -1.0f,  0.0f)),
+		LookAt(vec3(0.0f, 0.0f, 0.0f), vec3(-1.0f,  0.0f,  0.0f), vec3(0.0f, -1.0f,  0.0f)),
+		LookAt(vec3(0.0f, 0.0f, 0.0f), vec3(0.0f,  1.0f,  0.0f), vec3(0.0f,  0.0f,  1.0f)),
+		LookAt(vec3(0.0f, 0.0f, 0.0f),vec3(0.0f, -1.0f,  0.0f), vec3(0.0f,  0.0f, -1.0f)),
+		LookAt(vec3(0.0f, 0.0f, 0.0f), vec3(0.0f,  0.0f,  1.0f), vec3(0.0f, -1.0f,  0.0f)),
+		LookAt(vec3(0.0f, 0.0f, 0.0f), vec3(0.0f,  0.0f, -1.0f), vec3(0.0f, -1.0f,  0.0))
+	};
+
+	UseShader(EquirectangularToCubemapShader);
+	SetMat4(EquirectangularToCubemapShader, "Projection", CaptureProjection);
+	SetInt(EquirectangularToCubemapShader, "EquirectangularMap", 0);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, HDRTexture);
+
+	glViewport(0, 0, 512, 512);
+	glBindFramebuffer(GL_FRAMEBUFFER, CaptureFBO);
+	for (uint32_t I = 0; I < 6; I++)
+	{
+		SetMat4(EquirectangularToCubemapShader, "View", CaptureViews[I]);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + I, EnvCubemap, 0);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+		glBindVertexArray(CubeVAO);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
+	}
+	
+
+	// NOTE(georgy): Diffuse irradiance map
+	GLuint IrradianceMap;
+	glGenTextures(1, &IrradianceMap);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, IrradianceMap);
+	for (uint32_t I = 0; I < 6; I++)
+	{
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + I, 0, GL_RGB16F, 32, 32, 0, GL_RGB, GL_FLOAT, 0);
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, CaptureFBO);
+	glBindRenderbuffer(GL_RENDERBUFFER, CaptureRBO);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 32, 32);
+
+	UseShader(ConvolutionIrradianceShader);
+	SetInt(ConvolutionIrradianceShader, "EnvironmentMap", 0);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, EnvCubemap);
+	SetMat4(ConvolutionIrradianceShader, "Projection", CaptureProjection);
+
+	glViewport(0, 0, 32, 32);
+	for (uint32_t I = 0; I < 6; I++)
+	{
+		SetMat4(ConvolutionIrradianceShader, "View", CaptureViews[I]);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
+							   GL_TEXTURE_CUBE_MAP_POSITIVE_X + I, IrradianceMap, 0);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+		glBindVertexArray(CubeVAO);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
+	}
+
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, Width, Height);
+
+
 	mat4 PerspectiveProjection = Perspective(45.0f, (real32)Width / (real32)Height, 0.1f, 100.0f);
-	SetMat4(Shader, "Projection", PerspectiveProjection);
+	UseShader(SkyboxShader);
+	SetInt(SkyboxShader, "Skybox", 0);
+	SetMat4(SkyboxShader, "Projection", PerspectiveProjection);
+
+	UseShader(PBRShader);
+	SetInt(PBRShader, "IrradianceMap", 0);
+	SetMat4(PBRShader, "Projection", PerspectiveProjection);
 
 	camera Camera = {};
 	Camera.P = vec3(0.0f, 0.0f, 3.0f);
 	Camera.TargetDir = vec3(0.0f, 0.0f, -1.0f);
 
-	SetVec3(Shader, "Albedo", vec3(0.5f, 0.0f, 0.0f));
-	SetFloat(Shader, "AO", 1.0f);
+	SetVec3(PBRShader, "Albedo", vec3(0.5f, 0.0f, 0.0f));
+	SetFloat(PBRShader, "AO", 1.0f);
 
 	vec3 LightPositions[] = 
 	{
@@ -402,23 +587,25 @@ int main(void)
 
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		UseShader(Shader);
+		UseShader(PBRShader);
 		mat4 View = LookAt(Camera.P, Camera.P + Camera.TargetDir);
-		SetMat4(Shader, "View", View);
-		SetVec3(Shader, "CamPos", Camera.P);
+		SetMat4(PBRShader, "View", View);
+		SetVec3(PBRShader, "CamPos", Camera.P);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_CUBE_MAP, IrradianceMap);
 
 		mat4 Model = Identity();
 		for (uint32_t Row = 0; Row < Rows; Row++)
 		{
-			SetFloat(Shader, "Metallic", Row / (real32)Rows);
+			SetFloat(PBRShader, "Metallic", Row / (real32)Rows);
 			for (uint32_t Column = 0; Column < Columns; Column++)
 			{
-				SetFloat(Shader, "Roughness", Clamp(Column / (real32)Columns, 0.05f, 1.0f));
+				SetFloat(PBRShader, "Roughness", Clamp(Column / (real32)Columns, 0.05f, 1.0f));
 
 				Model = Translate(vec3((Column - (Columns / 2.0f)) * Spacing,
 									   (Row - (Rows / 2.0f)) * Spacing,
 										0.0f));
-				SetMat4(Shader, "Model", Model);
+				SetMat4(PBRShader, "Model", Model);
 				RenderSphere();
 			}
 
@@ -426,13 +613,22 @@ int main(void)
 
 		for (uint32_t I = 0; I < ArrayCount(LightPositions); I++)
 		{
-			SetVec3(Shader, (char *)("LightPositions[" + std::to_string(I) + "]").c_str(), LightPositions[I]);
-			SetVec3(Shader, (char *)("LightColors[" + std::to_string(I) + "]").c_str(), LightColors[I]);
+			SetVec3(PBRShader, (char *)("LightPositions[" + std::to_string(I) + "]").c_str(), LightPositions[I]);
+			SetVec3(PBRShader, (char *)("LightColors[" + std::to_string(I) + "]").c_str(), LightColors[I]);
 
 			Model = Translate(LightPositions[I]);
-			SetMat4(Shader, "Model", Model);
+			SetMat4(PBRShader, "Model", Model);
 			RenderSphere();
 		}
+
+		glDepthFunc(GL_LEQUAL);
+		UseShader(SkyboxShader);
+		SetMat4(SkyboxShader, "View", View);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_CUBE_MAP, EnvCubemap);
+		glBindVertexArray(CubeVAO);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
+		glDepthFunc(GL_LESS);
 
 		real32 SecondsElapsedForFrame = GetSecondsElapsed(LastCounter, GetWallClock());
 		while (SecondsElapsedForFrame < TargetSecondsPerFrame)

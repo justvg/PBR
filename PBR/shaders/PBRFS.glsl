@@ -5,6 +5,8 @@ in vec2 TexCoords;
 in vec3 FragPosWorld;
 in vec3 Normal;
 
+uniform samplerCube IrradianceMap;
+
 uniform vec3 Albedo;
 uniform float Metallic;
 uniform float Roughness;
@@ -20,6 +22,11 @@ const float PI = 3.14159265359;
 vec3 FresnelSchlick(float HdotV, vec3 F0)
 {
 	return (F0 + (vec3(1.0) - F0) * pow(1.0 - HdotV, 5.0));
+}
+
+vec3 FresnelSchlick(float CosTheta, vec3 F0, float Roughness)
+{
+	 return (F0 + (max(vec3(1.0 - Roughness), F0) - F0) * pow(1.0 - CosTheta, 5.0));
 }
 
 float DistributionGGX(vec3 N, vec3 H, float Roughness)
@@ -82,7 +89,10 @@ void main()
 		RadianceOut += (DiffuseRatio * Albedo / PI + Specular) * LightRadiance * max(dot(N, L), 0.0);
 	}
 
-	vec3 Ambient = 0.03 * Albedo * AO;
+	vec3 SpecularRatio = FresnelSchlick(max(dot(N, V), 0.0), F0, Roughness);
+	vec3 DiffuseRatio = vec3(1.0) - SpecularRatio;
+	vec3 Diffuse = texture(IrradianceMap, N).rgb * Albedo;
+	vec3 Ambient = DiffuseRatio * Diffuse * AO;
 	vec3 Color = Ambient + RadianceOut;
 
 	Color = Color / (Color + vec3(1.0));
