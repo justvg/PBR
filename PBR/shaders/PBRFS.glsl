@@ -6,6 +6,8 @@ in vec3 FragPosWorld;
 in vec3 Normal;
 
 uniform samplerCube IrradianceMap;
+uniform samplerCube PrefilterMap;
+uniform sampler2D BRDFLUT;
 
 uniform vec3 Albedo;
 uniform float Metallic;
@@ -60,6 +62,7 @@ void main()
 {
 	vec3 N = normalize(Normal);
 	vec3 V = normalize(CamPos - FragPosWorld);
+	vec3 R = reflect(-V, N);
 
 	vec3 F0 = vec3(0.04);
 	F0 = mix(F0, Albedo, Metallic);
@@ -91,10 +94,19 @@ void main()
 
 	vec3 SpecularRatio = FresnelSchlick(max(dot(N, V), 0.0), F0, Roughness);
 	vec3 DiffuseRatio = vec3(1.0) - SpecularRatio;
-	vec3 Diffuse = texture(IrradianceMap, N).rgb * Albedo;
-	vec3 Ambient = DiffuseRatio * Diffuse * AO;
-	vec3 Color = Ambient + RadianceOut;
+	DiffuseRatio *= 1.0 - Metallic;
 
+	vec3 Diffuse = texture(IrradianceMap, N).rgb * Albedo;
+
+	float MaxReflectedLOD = 4.0;
+	vec3 PrefilteredColor = textureLod(PrefilterMap, R, Roughness * MaxReflectedLOD).rgb;
+	vec2 BRDF = texture(BRDFLUT, vec2(max(dot(N, V), 0.0), Roughness)).rg;
+	vec3 Specular = PrefilteredColor * (SpecularRatio * BRDF.x + BRDF.y);
+
+	vec3 Ambient = (DiffuseRatio * Diffuse + Specular) * AO;
+	// vec3 Ambient = DiffuseRatio * Diffuse * AO;
+
+	vec3 Color = Ambient + RadianceOut;
 	Color = Color / (Color + vec3(1.0));
 	Color = sqrt(Color);
 
