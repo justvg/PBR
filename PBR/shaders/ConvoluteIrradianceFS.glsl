@@ -27,11 +27,11 @@ void main()
 
 			vec3 SampleVec = TangentSample.x * Right + TangentSample.y * Up + TangentSample.z * Normal;
 
-			Irradiance += texture(EnvironmentMap, SampleVec).rgb * cos((0.5 * PI) - Theta) * sin(Theta);
+			Irradiance += texture(EnvironmentMap, SampleVec).rgb * cos(Theta) * sin((0.5f*PI) - Theta);
 			SampleCount++;
 		}
 	}
-	Irradiance = PI * Irradiance / SampleCount;
+	Irradiance = Irradiance / (SampleCount * PI);
 
 	FragColor = vec4(Irradiance, 1.0);
 }
